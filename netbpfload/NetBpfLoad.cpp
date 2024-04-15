@@ -201,14 +201,14 @@ int main(int argc, char** argv, char * const envp[]) {
          * and 32-bit userspace on 64-bit kernel bpf ringbuffer compatibility is broken.
          */
         ALOGE("64-bit userspace required on 6.2+ kernels.");
-        return 1;
+        goto fail;
     }
 
     // Ensure we can determine the Android build type.
     if (!android::bpf::isEng() && !android::bpf::isUser() && !android::bpf::isUserdebug()) {
         ALOGE("Failed to determine the build type: got %s, want 'eng', 'user', or 'userdebug'",
               android::bpf::getBuildType().c_str());
-        return 1;
+        goto fail;
     }
 
     if (isAtLeastU) {
@@ -216,8 +216,7 @@ int main(int argc, char** argv, char * const envp[]) {
         // but we need 0 (enabled)
         // (this writeFile is known to fail on at least 4.19, but always defaults to 0 on
         // pre-5.13, on 5.13+ it depends on CONFIG_BPF_UNPRIV_DEFAULT_OFF)
-        if (writeProcSysFile("/proc/sys/kernel/unprivileged_bpf_disabled", "0\n") &&
-            android::bpf::isAtLeastKernelVersion(5, 13, 0)) return 1;
+        writeProcSysFile("/proc/sys/kernel/unprivileged_bpf_disabled", "0\n");
 
         // Enable the eBPF JIT -- but do note that on 64-bit kernels it is likely
         // already force enabled by the kernel config option BPF_JIT_ALWAYS_ON.
@@ -225,14 +224,12 @@ int main(int argc, char** argv, char * const envp[]) {
         //  kernel does not have CONFIG_BPF_JIT=y)
         // BPF_JIT is required by R VINTF (which means 4.14/4.19/5.4 kernels),
         // but 4.14/4.19 were released with P & Q, and only 5.4 is new in R+.
-        if (writeProcSysFile("/proc/sys/net/core/bpf_jit_enable", "1\n") &&
-            android::bpf::isAtLeastKernelVersion(4, 14, 0)) return 1;
+        writeProcSysFile("/proc/sys/net/core/bpf_jit_enable", "1\n");
 
         // Enable JIT kallsyms export for privileged users only
         // (Note: this (open) will fail with ENOENT 'No such file or directory' if
         //  kernel does not have CONFIG_HAVE_EBPF_JIT=y)
-        if (writeProcSysFile("/proc/sys/net/core/bpf_jit_kallsyms", "1\n") &&
-            android::bpf::isAtLeastKernelVersion(4, 14, 0)) return 1;
+        writeProcSysFile("/proc/sys/net/core/bpf_jit_kallsyms", "1\n");
     }
 
     // Create all the pin subdirectories
@@ -240,7 +237,7 @@ int main(int argc, char** argv, char * const envp[]) {
     //  which could otherwise fail with ENOENT during object pinning or renaming,
     //  due to ordering issues)
     for (const auto& location : locations) {
-        if (createSysFsBpfSubDir(location.prefix)) return 1;
+        if (createSysFsBpfSubDir(location.prefix)) goto fail;
     }
 
     // Load all ELF objects, create programs and maps, and pin them
@@ -251,20 +248,11 @@ int main(int argc, char** argv, char * const envp[]) {
             ALOGE("If this triggers randomly, you might be hitting some memory allocation "
                   "problems or startup script race.");
             ALOGE("--- DO NOT EXPECT SYSTEM TO BOOT SUCCESSFULLY ---");
-            sleep(20);
-            return 2;
+            goto fail;
         }
     }
 
-    int key = 1;
-    int value = 123;
-    android::base::unique_fd map(
-            android::bpf::createMap(BPF_MAP_TYPE_ARRAY, sizeof(key), sizeof(value), 2, 0));
-    if (android::bpf::writeToMapEntry(map, &key, &value, BPF_ANY)) {
-        ALOGE("Critical kernel bug - failure to write into index 1 of 2 element bpf map array.");
-        return 1;
-    }
-
+fail:
     ALOGI("done, transferring control to platform bpfloader.");
 
     const char * args[] = { "/system/bin/bpfloader", NULL, };
